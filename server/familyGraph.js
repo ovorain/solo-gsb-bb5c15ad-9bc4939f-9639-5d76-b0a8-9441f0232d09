@@ -468,6 +468,133 @@ function findCommonAncestors(state, idA, idB) {
   };
 }
 
+/**
+ * 辈分矛盾核查（纯函数，不修改 state、不写入任何数据）。
+ *
+ * 对每一对存在祖先关系的成员（祖先 ancestor、后代 descendant，两人不同），
+ * 沿「父母 → 子女」关系（后代向上）分别求：
+ *   - 最少代数 minGen：BFS 首达步数，以及其中一条完整最短成员链；
+ *   - 最多代数 maxGen：DAG 上的最长路（记忆化 DFS），以及一条完整最长成员链。
+ * 只有 minGen < maxGen（同一对人在不同路径上代际跨度不一致）才列为矛盾；
+ * 同代不同路径（minGen === maxGen，例如经父系、母系两条 2 代路径到同一祖父母）
+ * 不报警。每一对祖先/后代只枚举一次（以后代为起点遍历其全部祖先）。
+ *
+ * filterId 可选：仅返回该成员作为祖先或后代参与的矛盾；
+ * 但 total 仍为过滤前的矛盾总数，便于界面提示“全部 N 对、其中包含该成员 M 对”。
+ * filterId 指向不存在的成员时返回 { error: '成员不存在' }。
+ *
+ * 返回 {
+ *   total,      // 全部矛盾条数（过滤前）
+ *   filtered,   // 是否使用了成员筛选
+ *   conflicts: [{
+ *     ancestorId, descendantId,
+ *     minGen, maxGen, diff,           // diff = maxGen - minGen（代数差）
+ *     shortestPath: [ancestorId, ..., descendantId],  // 祖先→子女→…→后代
+ *     longestPath:  [ancestorId, ..., descendantId],
+ *   }]
+ * }
+ */
+function findGenerationConflicts(state, filterId = null) {
+  if (filterId !== null && filterId !== undefined && !hasMember(state, filterId)) {
+    return { error: '成员不存在' };
+  }
+  const filtered = !!filterId;
+
+  // 子女邻接表：childrenOf[parent] = [child, ...]（沿父母→子女向下）
+  const childrenOf = {};
+  for (const member of state.members) childrenOf[member.id] = [];
+  for (const childId of Object.keys(state.parentsOf || {})) {
+    for (const parentId of state.parentsOf[childId] || []) {
+      if (childrenOf[parentId]) childrenOf[parentId].push(childId);
+    }
+  }
+
+  const all = [];
+
+  for (const descendant of state.members) {
+    const start = descendant.id;
+
+    // BFS 向上：最少代数；shortestPrev 记录首达前驱（其子女），便于重建一条最短链
+    const minGenOf = new Map([[start, 0]]);
+    const shortestPrev = new Map([[start, null]]);
+    const queue = [start];
+    for (let head = 0; head < queue.length; head++) {
+      const cur = queue[head];
+      for (const p of state.parentsOf[cur] || []) {
+        if (!minGenOf.has(p)) {
+          minGenOf.set(p, minGenOf.get(cur) + 1);
+          shortestPrev.set(p, cur);
+          queue.push(p);
+        }
+      }
+    }
+    if (minGenOf.size <= 1) continue; // 该成员没有任何祖先
+
+    // 最多代数：在「start 经父母链可达」的祖先子图（DAG）上做记忆化 DFS。
+    // 向上走的图中边为 子女 → 父母，因此到达祖先 v 的最后一步来自 v 的某个
+    // 同样可达的子女 c：longest(v) = max(longest(c) + 1)，base 为 start = 0。
+    // parentsOf 保证整图为 DAG，递归必然收敛；不可达的子女不参与取 max。
+    const memo = new Map([[start, 0]]);
+    const longestPrev = new Map([[start, null]]);
+    const longest = (v) => {
+      if (memo.has(v)) return memo.get(v);
+      let best = -Infinity;
+      let bestChild = null;
+      for (const c of childrenOf[v] || []) {
+        if (!minGenOf.has(c)) continue; // 不在 start 可达祖先子图内
+        const candidate = longest(c) + 1;
+        if (candidate > best) {
+          best = candidate;
+          bestChild = c;
+        }
+      }
+      memo.set(v, best);
+      longestPrev.set(v, bestChild);
+      return best;
+    };
+
+    // 沿前驱表重建 祖先 → 子女 → … → 后代 的完整成员链
+    const rebuildPath = (prev, ancestorId) => {
+      const path = [ancestorId];
+      let cur = ancestorId;
+      while (cur !== start) {
+        cur = prev.get(cur);
+        path.push(cur);
+      }
+      return path;
+    };
+
+    for (const ancestorId of minGenOf.keys()) {
+      if (ancestorId === start) continue;
+      const minGen = minGenOf.get(ancestorId);
+      const maxGen = longest(ancestorId);
+      if (maxGen <= minGen) continue; // 同代不同路径不算矛盾
+      all.push({
+        ancestorId,
+        descendantId: start,
+        minGen,
+        maxGen,
+        diff: maxGen - minGen,
+        shortestPath: rebuildPath(shortestPrev, ancestorId),
+        longestPath: rebuildPath(longestPrev, ancestorId),
+      });
+    }
+  }
+
+  all.sort((a, b) => {
+    if (b.diff !== a.diff) return b.diff - a.diff;
+    if (b.maxGen !== a.maxGen) return b.maxGen - a.maxGen;
+    if (a.ancestorId !== b.ancestorId) return a.ancestorId.localeCompare(b.ancestorId);
+    return a.descendantId.localeCompare(b.descendantId);
+  });
+
+  const conflicts = filtered
+    ? all.filter((c) => c.ancestorId === filterId || c.descendantId === filterId)
+    : all;
+
+  return { total: all.length, filtered, conflicts };
+}
+
 module.exports = {
   MAX_PARENTS_PER_CHILD,
   MAX_MEMBERS,
@@ -480,4 +607,5 @@ module.exports = {
   previewMergeMembers,
   allShortestPathsUp,
   findCommonAncestors,
+  findGenerationConflicts,
 };

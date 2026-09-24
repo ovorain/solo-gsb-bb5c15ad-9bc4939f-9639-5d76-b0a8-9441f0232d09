@@ -12,7 +12,8 @@
     <p class="subtitle">
       录入成员与「父母 → 子女」关系（每名子女至多两位父母），自动拒绝自指、重复边与祖先环路；
       每次成功写入都可在顶部「最近操作」中一键撤销（重启后仍可撤销，仅可撤销一次）；
-      选中两人即可沿父母链查询总代数最少的全部共同祖先及最短亲缘路径。
+      选中两人即可沿父母链查询总代数最少的全部共同祖先及最短亲缘路径；
+      还可一键核查全部「辈分矛盾」：同一对祖先与后代沿不同路径的最少 / 最多代数不一致时逐条列出。
     </p>
   </header>
 
@@ -124,6 +125,26 @@
       </form>
       <div id="query-result" class="result" aria-live="polite">
         <p class="placeholder">请在上方选择两位成员后点击查询。</p>
+      </div>
+    </section>
+
+    <!-- 辈分矛盾核查 -->
+    <section class="card wide" aria-labelledby="gen-title">
+      <h2 id="gen-title">④ 辈分矛盾核查</h2>
+      <form id="gen-form" class="edge-form">
+        <label>
+          只看与该成员相关的矛盾（祖先或后代，可选）
+          <select id="gen-filter"></select>
+        </label>
+        <button type="submit" class="primary">核查辈分矛盾</button>
+      </form>
+      <p class="empty-hint">
+        对每一对存在祖先关系的成员，沿「父母 → 子女」关系分别求最少与最多代数：
+        两者不等才列为矛盾；同代不同路径（如分别经父系、母系同代到达同一祖先）不报警。
+        查询为只读，成员或关系变更后重新点击核查即可看到最新结果。
+      </p>
+      <div id="gen-result" class="result" aria-live="polite">
+        <p class="placeholder">点击「核查辈分矛盾」开始：将枚举全部祖先—后代对。</p>
       </div>
     </section>
   </main>

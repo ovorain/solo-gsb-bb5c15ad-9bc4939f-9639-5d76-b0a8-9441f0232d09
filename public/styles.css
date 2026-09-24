@@ -303,6 +303,13 @@ button.danger-link {
 
 .path-line .path-arrow { color: var(--muted); margin: 0 4px; }
 
+/* 辈分矛盾核查 */
+.conflict-block { border-color: #fcd34d; }
+
+.conflict-block h3 { font-size: 1rem; }
+
+.ancestor-meta .conflict-diff { color: var(--danger); }
+
 /* Toast */
 .toast {
   position: fixed;

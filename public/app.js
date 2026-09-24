@@ -24,11 +24,13 @@ const selection = {
   edgeChild: '',
   queryA: '',
   queryB: '',
+  genFilter: '',
   mergeKeep: '',
   mergeRemove: '',
 };
 
-let queryStale = false; // 关系被修改后，查询结果标记为过期
+let queryStale = false; // 关系被修改后，共同祖先查询结果标记为过期
+let genStale = false; // 成员或关系被修改后，辈分矛盾核查结果标记为过期
 
 // 最近一次合并预览：{ version, keepId, mergeId, valid, ...服务端返回 }
 // 仅当 version 与当前家谱版本一致且两人选择未改变时有效
@@ -316,6 +318,7 @@ function renderSelects() {
   fillSelect($('edge-child'), selection.edgeChild, '选择子女');
   fillSelect($('query-a'), selection.queryA, '选择成员甲');
   fillSelect($('query-b'), selection.queryB, '选择成员乙');
+  fillSelect($('gen-filter'), selection.genFilter, '全部成员（不筛选）');
   fillSelect($('merge-keep'), selection.mergeKeep, '选择保留成员');
   fillSelect($('merge-remove'), selection.mergeRemove, '选择被合并成员');
 }
@@ -339,15 +342,23 @@ function fillSelect(select, selectedId, placeholder) {
 }
 
 function renderStaleBanner() {
-  const box = $('query-result');
+  renderOneStaleBanner(
+    $('query-result'),
+    queryStale,
+    '⚠️ 关系在上次查询后发生过修改，以下结果可能已过期，请重新查询。',
+  );
+  renderOneStaleBanner(
+    $('gen-result'),
+    genStale,
+    '⚠️ 成员或关系在上次核查后发生过修改，以下结果可能已过期，请重新核查。',
+  );
+}
+
+function renderOneStaleBanner(box, stale, message) {
+  if (!box || !box.dataset.hasResult) return;
   const existing = box.querySelector('.stale-banner');
-  if (queryStale && box.dataset.hasResult === '1') {
-    if (!existing) {
-      box.prepend(el('p', {
-        class: 'stale-banner',
-        text: '⚠️ 关系在上次查询后发生过修改，以下结果可能已过期，请重新查询。',
-      }));
-    }
+  if (stale) {
+    if (!existing) box.prepend(el('p', { class: 'stale-banner', text: message }));
   } else if (existing) {
     existing.remove();
   }
@@ -355,6 +366,7 @@ function renderStaleBanner() {
 
 function markStale() {
   queryStale = true;
+  genStale = true;
   renderStaleBanner();
 }
 
@@ -396,6 +408,7 @@ function syncSelectionFromForm() {
   selection.edgeChild = $('edge-child').value;
   selection.queryA = $('query-a').value;
   selection.queryB = $('query-b').value;
+  selection.genFilter = $('gen-filter').value;
   selection.mergeKeep = $('merge-keep').value;
   selection.mergeRemove = $('merge-remove').value;
 }
@@ -404,6 +417,7 @@ $('edge-parent').addEventListener('change', syncSelectionFromForm);
 $('edge-child').addEventListener('change', syncSelectionFromForm);
 $('query-a').addEventListener('change', syncSelectionFromForm);
 $('query-b').addEventListener('change', syncSelectionFromForm);
+$('gen-filter').addEventListener('change', syncSelectionFromForm);
 
 // 合并的两个成员一旦改变，旧预览立即失效
 $('merge-keep').addEventListener('change', () => {
@@ -948,6 +962,119 @@ $('query-form').addEventListener('submit', async (e) => {
     const data = await api(`/api/common-ancestors?${params.toString()}`);
     queryStale = false;
     renderQueryResult(data, nameA, nameB);
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+/* ---------------- 辈分矛盾核查结果渲染 ---------------- */
+
+/** 渲染一条 祖先 → 子女 → … → 后代 的完整成员链（方向自上而下） */
+function renderGenChainLine(path, genTag) {
+  const frag = document.createDocumentFragment();
+  path.forEach((node, idx) => {
+    if (idx > 0) frag.appendChild(el('span', { class: 'path-arrow', text: '↓' }));
+    frag.appendChild(document.createTextNode(node.name));
+  });
+  return el('div', { class: 'path-line' }, [
+    el('span', { class: 'gen-tag', text: genTag }),
+    frag,
+  ]);
+}
+
+function renderConflictBlock(c) {
+  const block = el('div', { class: 'conflict-block ancestor-block' });
+  block.appendChild(el('h3', {}, [
+    document.createTextNode('「'),
+    el('strong', { text: c.ancestorName }),
+    document.createTextNode('」 → … → 「'),
+    el('strong', { text: c.descendantName }),
+    document.createTextNode('」'),
+  ]));
+  block.appendChild(el('p', { class: 'ancestor-meta' }, [
+    document.createTextNode('最短路径 '),
+    el('strong', { text: `${c.minGen} 代` }),
+    document.createTextNode('，最长路径 '),
+    el('strong', { text: `${c.maxGen} 代` }),
+    document.createTextNode('，'),
+    el('strong', { class: 'conflict-diff', text: `代数差 ${c.diff} 代` }),
+    document.createTextNode('：同一对祖先与后代沿不同关系路径的辈分隔辈数不一致。'),
+  ]));
+
+  const paths = el('div', { class: 'paths' });
+  const colShort = el('div', { class: 'path-col' }, [
+    el('h4', { text: `最短成员链（${c.minGen} 代）` }),
+    renderGenChainLine(c.shortestPath, `${c.shortestPath.length - 1} 代`),
+  ]);
+  const colLong = el('div', { class: 'path-col' }, [
+    el('h4', { text: `最长成员链（${c.maxGen} 代）` }),
+    renderGenChainLine(c.longestPath, `${c.longestPath.length - 1} 代`),
+  ]);
+  paths.append(colShort, colLong);
+  block.appendChild(paths);
+  return block;
+}
+
+function renderGenResult(data) {
+  const box = $('gen-result');
+  box.replaceChildren();
+  box.dataset.hasResult = '1';
+
+  if (data.conflicts.length === 0) {
+    const summary = el('div', { class: 'summary no-match' });
+    if (data.filtered) {
+      summary.appendChild(el('strong', { text: '当前筛选的成员没有参与任何辈分矛盾。' }));
+      summary.appendChild(el('div', {
+        text: `全家家谱共核查出 ${data.total} 对辈分矛盾（清空成员筛选后可查看全部）；同代不同路径不会报警。`,
+      }));
+    } else if (data.total === 0) {
+      summary.appendChild(el('strong', { text: '未发现辈分矛盾。' }));
+      summary.appendChild(el('div', {
+        text: '全部存在祖先关系的成员对，沿不同父母→子女路径得到的代数都一致；同代不同路径（如经父系与母系同代到达同一祖先）不属于矛盾。',
+      }));
+    } else {
+      summary.appendChild(el('strong', { text: '当前筛选条件下没有矛盾。' }));
+    }
+    box.appendChild(summary);
+    return;
+  }
+
+  const summary = el('div', { class: 'summary' });
+  if (data.filtered) {
+    summary.appendChild(el('div', {}, [
+      document.createTextNode('全家家谱共 '),
+      el('strong', { text: `${data.total} 对` }),
+      document.createTextNode(' 辈分矛盾，其中与所选成员相关的 '),
+      el('strong', { text: `${data.count} 对` }),
+      document.createTextNode(' 如下（按代数差从大到小排列）：'),
+    ]));
+  } else {
+    summary.appendChild(el('div', {}, [
+      document.createTextNode('共核查出 '),
+      el('strong', { text: `${data.total} 对` }),
+      document.createTextNode(' 辈分矛盾（同一对祖先与后代的最少、最多代数不一致），按代数差从大到小排列：'),
+    ]));
+  }
+  summary.appendChild(el('div', {
+    class: 'empty-hint',
+    text: '每条给出两端成员、代数差以及最短、最长各一条完整成员链（祖先 → 子女 → … → 后代）。',
+  }));
+  box.appendChild(summary);
+
+  for (const c of data.conflicts) box.appendChild(renderConflictBlock(c));
+}
+
+$('gen-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  syncSelectionFromForm();
+  const memberId = selection.genFilter;
+  const params = new URLSearchParams();
+  if (memberId) params.set('member', memberId);
+  try {
+    const url = '/api/generation-conflicts' + (params.toString() ? `?${params.toString()}` : '');
+    const data = await api(url);
+    genStale = false;
+    renderGenResult(data);
   } catch (err) {
     toast(err.message, true);
   }

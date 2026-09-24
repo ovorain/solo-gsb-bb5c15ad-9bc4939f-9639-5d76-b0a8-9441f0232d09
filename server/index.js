@@ -3,7 +3,7 @@
 const path = require('path');
 const express = require('express');
 const { createStore } = require('./store');
-const { findCommonAncestors, validateEdge } = require('./familyGraph');
+const { findCommonAncestors, findGenerationConflicts, validateEdge } = require('./familyGraph');
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -288,6 +288,46 @@ app.get('/api/common-ancestors', (req, res) => {
       totalGen: a.totalGen,
       pathsA: a.pathsA.map(decoratePath),
       pathsB: a.pathsB.map(decoratePath),
+    })),
+  });
+});
+
+/**
+ * 辈分矛盾核查（只读，不写入任何数据）：
+ * 枚举每一对存在祖先关系的成员，沿父母→子女关系分别求最少与最多代数，
+ * 仅当两者不等时列为矛盾（同代不同路径不报警），
+ * 每条结果给出代数差及最短、最长各一条完整成员链。
+ * 可选查询参数 member=<id>：只返回该成员作为祖先或后代参与的矛盾
+ * （total 仍为过滤前总数）。成员或关系变更后重新查询即得到最新结果。
+ */
+app.get('/api/generation-conflicts', (req, res) => {
+  const memberId =
+    typeof req.query.member === 'string' && req.query.member.trim()
+      ? req.query.member.trim()
+      : null;
+  const result = findGenerationConflicts(store.getState(), memberId);
+  if (result.error) return sendError(res, 404, result.error);
+
+  const byId = new Map(store.list().members.map((m) => [m.id, m.name]));
+  const nameOf = (id) => byId.get(id) || '（已删除）';
+  const decoratePath = (p) =>
+    p.map((id) => ({ id, name: nameOf(id) }));
+
+  res.json({
+    version: store.getVersion(),
+    total: result.total,
+    filtered: result.filtered,
+    count: result.conflicts.length,
+    conflicts: result.conflicts.map((c) => ({
+      ancestorId: c.ancestorId,
+      ancestorName: nameOf(c.ancestorId),
+      descendantId: c.descendantId,
+      descendantName: nameOf(c.descendantId),
+      minGen: c.minGen,
+      maxGen: c.maxGen,
+      diff: c.diff,
+      shortestPath: decoratePath(c.shortestPath),
+      longestPath: decoratePath(c.longestPath),
     })),
   });
 });
