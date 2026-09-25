@@ -468,6 +468,150 @@ function findCommonAncestors(state, idA, idB) {
   };
 }
 
+/**
+ * 沿父母链向上计算从 start 到其每个祖先（含自身）的最少代数与最多代数，
+ * 并各还原一条完整成员链。
+ *
+ * 图为 DAG（建边校验与加载净化均保证）：在 start 沿父母链可达的子图上做拓扑序 DP
+ * （Kahn，起点 start 的入度为 0），按 child → parent 方向逐条边松弛
+ * 最短 / 最长距离，并记录一个前驱节点用于还原一条完整链。
+ * 同一最短（最长）代数若存在多条路径，只保留拓扑处理中遇到的第一条。
+ *
+ * 返回 Map: ancestorId -> {
+ *   minGen: number,          // 最少代数（向上步数）
+ *   maxGen: number,          // 最多代数
+ *   shortestPath: [id, ...], // 一条最短链，方向 start（后代）→ … → ancestor（祖先）
+ *   longestPath: [id, ...],  // 一条最长链，方向同上
+ * }
+ */
+function generationDistancesUp(state, start) {
+  // 1. 收集沿父母链从 start 可达的全部节点
+  const reachable = new Set([start]);
+  const stack = [start];
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const p of state.parentsOf[cur] || []) {
+      if (!reachable.has(p)) {
+        reachable.add(p);
+        stack.push(p);
+      }
+    }
+  }
+
+  // 2. 可达子图内各节点沿 child → parent 方向的入度
+  const indegree = new Map([...reachable].map((id) => [id, 0]));
+  for (const v of reachable) {
+    for (const p of state.parentsOf[v] || []) {
+      if (reachable.has(p)) indegree.set(p, indegree.get(p) + 1);
+    }
+  }
+
+  // 3. 拓扑序 DP：节点出队时其全部可达子女均已处理，距离已最终确定
+  const minGen = new Map([[start, 0]]);
+  const maxGen = new Map([[start, 0]]);
+  const predMin = new Map([[start, null]]);
+  const predMax = new Map([[start, null]]);
+  const queue = [start];
+  for (let head = 0; head < queue.length; head++) {
+    const v = queue[head];
+    for (const p of state.parentsOf[v] || []) {
+      if (!reachable.has(p)) continue;
+      const candidateMin = minGen.get(v) + 1;
+      if (!minGen.has(p) || candidateMin < minGen.get(p)) {
+        minGen.set(p, candidateMin);
+        predMin.set(p, v);
+      }
+      const candidateMax = maxGen.get(v) + 1;
+      if (!maxGen.has(p) || candidateMax > maxGen.get(p)) {
+        maxGen.set(p, candidateMax);
+        predMax.set(p, v);
+      }
+      indegree.set(p, indegree.get(p) - 1);
+      if (indegree.get(p) === 0) queue.push(p);
+    }
+  }
+
+  const buildPath = (pred, target) => {
+    const path = [];
+    let cur = target;
+    while (cur !== null) {
+      path.push(cur);
+      cur = pred.get(cur);
+    }
+    path.reverse(); // target（祖先）→ start（后代）反转为后代 → 祖先
+    return path;
+  };
+
+  const result = new Map();
+  for (const id of reachable) {
+    result.set(id, {
+      minGen: minGen.get(id),
+      maxGen: maxGen.get(id),
+      shortestPath: buildPath(predMin, id),
+      longestPath: buildPath(predMax, id),
+    });
+  }
+  return result;
+}
+
+/**
+ * 辈分矛盾核查：对每一对存在祖先关系的成员（祖先 ancestor、后代 descendant），
+ * 分别求后代沿父母链到祖先的最少代数与最多代数；只有两者不相等才列为矛盾。
+ * 同代不同路径（最少 = 最多）不报警。
+ *
+ * filterId 非空时只保留“祖先或后代恰好是该成员”的矛盾（只读筛选，不改变计算）。
+ * 返回 { error } 或 {
+ *   ancestorPairCount: number,   // 全图存在祖先关系的成员对数量（不受筛选影响）
+ *   conflictCount: number,        // 本次返回的矛盾条数
+ *   conflicts: [{
+ *     ancestorId, descendantId,
+ *     minGen, maxGen,
+ *     generationGap: maxGen - minGen,
+ *     shortestPath: [id...],      // 后代 → 祖先 的一条最短完整成员链
+ *     longestPath: [id...],       // 后代 → 祖先 的一条最长完整成员链
+ *   }],
+ * }
+ */
+function findGenerationConflicts(state, filterId = null) {
+  if (filterId !== null && filterId !== undefined && filterId !== '' && !hasMember(state, filterId)) {
+    return { error: '成员不存在' };
+  }
+
+  const conflicts = [];
+  let ancestorPairCount = 0;
+
+  // 以成员表固定顺序遍历，保证输出稳定
+  for (const descendant of state.members) {
+    const distances = generationDistancesUp(state, descendant.id);
+    for (const ancestor of state.members) {
+      if (ancestor.id === descendant.id) continue;
+      const info = distances.get(ancestor.id);
+      if (!info) continue; // 不存在祖先关系
+      ancestorPairCount += 1;
+      if (info.minGen === info.maxGen) continue; // 同代不同路径不算矛盾
+      if (filterId && filterId !== ancestor.id && filterId !== descendant.id) continue;
+      conflicts.push({
+        ancestorId: ancestor.id,
+        descendantId: descendant.id,
+        minGen: info.minGen,
+        maxGen: info.maxGen,
+        generationGap: info.maxGen - info.minGen,
+        shortestPath: info.shortestPath,
+        longestPath: info.longestPath,
+      });
+    }
+  }
+
+  conflicts.sort((a, b) => {
+    if (b.generationGap !== a.generationGap) return b.generationGap - a.generationGap;
+    if (b.maxGen !== a.maxGen) return b.maxGen - a.maxGen;
+    if (a.descendantId !== b.descendantId) return a.descendantId.localeCompare(b.descendantId);
+    return a.ancestorId.localeCompare(b.ancestorId);
+  });
+
+  return { ancestorPairCount, conflictCount: conflicts.length, conflicts };
+}
+
 module.exports = {
   MAX_PARENTS_PER_CHILD,
   MAX_MEMBERS,
@@ -480,4 +624,6 @@ module.exports = {
   previewMergeMembers,
   allShortestPathsUp,
   findCommonAncestors,
+  generationDistancesUp,
+  findGenerationConflicts,
 };

@@ -12,7 +12,8 @@
     <p class="subtitle">
       录入成员与「父母 → 子女」关系（每名子女至多两位父母），自动拒绝自指、重复边与祖先环路；
       每次成功写入都可在顶部「最近操作」中一键撤销（重启后仍可撤销，仅可撤销一次）；
-      选中两人即可沿父母链查询总代数最少的全部共同祖先及最短亲缘路径。
+      选中两人即可沿父母链查询总代数最少的全部共同祖先及最短亲缘路径；
+      还可对每对有祖先关系的成员核查最短与最长代数不一致的辈分矛盾。
     </p>
   </header>
 
@@ -124,6 +125,29 @@
       </form>
       <div id="query-result" class="result" aria-live="polite">
         <p class="placeholder">请在上方选择两位成员后点击查询。</p>
+      </div>
+    </section>
+
+    <!-- 辈分矛盾核查 -->
+    <section class="card wide" aria-labelledby="conflict-title">
+      <h2 id="conflict-title">
+        ④ 辈分矛盾核查
+        <span id="conflict-count" class="badge">未核查</span>
+      </h2>
+      <form id="conflict-form" class="edge-form">
+        <label>
+          按成员筛选（可选：只看该成员作为祖先或后代的矛盾）
+          <select id="conflict-member"></select>
+        </label>
+        <button type="submit" class="primary">开始核查</button>
+      </form>
+      <p class="empty-hint">
+        对每一对存在祖先关系的成员，沿父母→子女关系分别计算最少与最多代数；
+        <strong>只有两者不相等才列为矛盾</strong>，同代不同路径（如同时通过父系、母系上溯且代数相同）不报警。
+        核查为只读操作，成员或关系变更后重新点击核查即可看到最新结果。
+      </p>
+      <div id="conflict-result" class="result" aria-live="polite">
+        <p class="placeholder">尚未核查。点击「开始核查」可查看全部辈分矛盾；也可先按成员筛选。</p>
       </div>
     </section>
   </main>

@@ -491,3 +491,10 @@ button.danger-link {
 }
 
 .merge-conflicts li { margin-bottom: 2px; }
+
+/* 辈分矛盾核查 */
+.conflict-block h3 { font-size: 0.98rem; }
+
+.conflict-gap {
+  color: var(--danger);
+}
